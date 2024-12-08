@@ -1,0 +1,158 @@
+--Tablas datos
+
+--Códigos CIE-10
+
+CREATE TABLE IF NOT EXISTS public.codigos
+(
+    "Capitulo" numeric(100,0),
+    "Grupo" numeric(100,0),
+    causa character(100) COLLATE pg_catalog."default"
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.codigos
+    OWNER to postgres;
+
+--Datos de provincias
+
+
+CREATE TABLE IF NOT EXISTS public.poblaciones
+(
+    id_provincia numeric(2,0) NOT NULL,
+    provincias character varying(255) COLLATE pg_catalog."default",
+    total numeric(15,0),
+    varones numeric(15,0),
+    mujeres numeric(15,0),
+    nbi numeric(15,4),
+    CONSTRAINT poblaciones_pkey PRIMARY KEY (id_provincia)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.poblaciones
+    OWNER to postgres;
+
+--Defunciones 
+
+
+CREATE TABLE IF NOT EXISTS public.defunciones
+(
+    anio numeric(10,0),
+    jurisdiccion_de_residencia_id numeric(10,0),
+    jurisdicion_residencia_nombre character(200) COLLATE pg_catalog."default",
+    cie10_causa_id character(50) COLLATE pg_catalog."default",
+    cie10_clasificacion character(200) COLLATE pg_catalog."default",
+    sexo_id numeric(10,0),
+    "Sexo" character(200) COLLATE pg_catalog."default",
+    grupo_edad character(200) COLLATE pg_catalog."default",
+    cantidad numeric(100,0)
+)
+
+TABLESPACE pg_default;
+
+ALTER TABLE IF EXISTS public.defunciones
+    OWNER to postgres;
+
+
+
+--Vistas materializadas
+
+--Muertes 2022:
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.muertes_2022
+TABLESPACE pg_default
+AS
+ SELECT defunciones.anio,
+    defunciones.jurisdiccion_de_residencia_id,
+    defunciones.jurisdicion_residencia_nombre,
+    defunciones.cie10_causa_id,
+    defunciones.cie10_clasificacion,
+    defunciones.sexo_id,
+    defunciones."Sexo",
+    defunciones.grupo_edad,
+    defunciones.cantidad
+   FROM defunciones
+  WHERE defunciones.anio = 2022::numeric
+WITH DATA;
+
+ALTER TABLE IF EXISTS public.muertes_2022
+    OWNER TO postgres;
+
+
+--join con clasificación de códigos de muerte:
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.vista_defunciones_codigos
+TABLESPACE pg_default
+AS
+ SELECT muertes_2022.anio,
+    muertes_2022.jurisdiccion_de_residencia_id,
+    muertes_2022.jurisdicion_residencia_nombre,
+    muertes_2022.cie10_causa_id,
+    muertes_2022.cie10_clasificacion,
+    muertes_2022.sexo_id,
+    muertes_2022."Sexo",
+    muertes_2022.grupo_edad,
+    muertes_2022.cantidad,
+    codigos.codmuer,
+    codigos."Capitulo",
+    codigos."Grupo",
+    codigos.causa
+   FROM muertes_2022
+     LEFT JOIN codigos ON muertes_2022.cie10_causa_id = codigos.causa
+WITH DATA;
+
+ALTER TABLE IF EXISTS public.vista_defunciones_codigos
+    OWNER TO postgres;
+
+--Muertes por provincia y grupos de causas:
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.vista_prov_causas
+TABLESPACE pg_default
+AS
+ SELECT vista_defunciones_codigos.jurisdiccion_de_residencia_id,
+    vista_defunciones_codigos."Grupo",
+    sum(vista_defunciones_codigos.cantidad) AS suma_cantidad
+   FROM vista_defunciones_codigos
+  GROUP BY vista_defunciones_codigos.jurisdiccion_de_residencia_id, vista_defunciones_codigos."Grupo"
+WITH DATA;
+
+ALTER TABLE IF EXISTS public.vista_prov_causas
+    OWNER TO postgres;
+
+--Muertes por sexo y grupo de edad:
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.vista_sexo_edad_causa
+TABLESPACE pg_default
+AS
+ SELECT vista_defunciones_codigos.grupo_edad,
+    vista_defunciones_codigos.sexo_id,
+    vista_defunciones_codigos."Grupo",
+    sum(vista_defunciones_codigos.cantidad) AS suma_cantidad
+   FROM vista_defunciones_codigos
+  GROUP BY vista_defunciones_codigos.grupo_edad, vista_defunciones_codigos.sexo_id, vista_defunciones_codigos."Grupo"
+WITH DATA;
+
+ALTER TABLE IF EXISTS public.vista_sexo_edad_causa
+    OWNER TO postgres;
+
+--Join con tabla de provincias:
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS public.para_tasas_totales
+TABLESPACE pg_default
+AS
+ SELECT vista_prov_causas.jurisdiccion_de_residencia_id,
+    vista_prov_causas."Grupo",
+    vista_prov_causas.suma_cantidad,
+    poblaciones.id_provincia,
+    poblaciones.provincias,
+    poblaciones.total,
+    poblaciones.varones,
+    poblaciones.mujeres,
+    poblaciones.nbi
+   FROM vista_prov_causas
+     LEFT JOIN poblaciones ON vista_prov_causas.jurisdiccion_de_residencia_id = poblaciones.id_provincia
+WITH DATA;
+
+ALTER TABLE IF EXISTS public.para_tasas_totales
+    OWNER TO postgres;
