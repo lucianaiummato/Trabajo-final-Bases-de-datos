@@ -1,0 +1,339 @@
+---
+title: "Trabajo final sistemas de información y bases de datos"
+author: "Luciana Iummato"
+date: "30/10/2024"
+output:
+  html_document: 
+    theme: cerulean
+    toc: yes
+    toc_float:
+      collapsed: yes
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+# Configura las opciones globales para todos los chunks
+knitr::opts_chunk$set(
+  echo = TRUE,        # Mostrar código en los chunks
+  message = FALSE,    # No mostrar mensajes
+  warning = FALSE,    # No mostrar advertencias
+  error = FALSE       # No mostrar errores
+)
+
+```
+
+```{r}
+# Instala RPostgres (si no está instalado)
+#install.packages("RPostgres")
+
+```
+
+## Conexión con base de datos SQL
+
+```{r}
+# Cargar el paquete
+library(RPostgres)
+
+# Configurar la conexión a la base de datos
+con <- dbConnect(
+  RPostgres::Postgres(),
+  dbname = "Mortalidad_2022",
+  host = "localhost",
+  port = 5432,  # Puerto por defecto
+  user = "postgres",
+  password = "Luiu1983"
+)
+
+if (!dbIsValid(con)) {
+  stop("No se pudo conectar a la base de datos.")
+}
+```
+
+## Consulta de vistas materializadas en SQL chequear totales porque no filtra 2022 parece
+
+```{r}
+# Consultar la vista materializada
+#prov_causa <- dbGetQuery(con, "SELECT * FROM vista_prov_causas;")
+sexo_edad <- dbGetQuery(con, "SELECT * FROM vista_sexo_edad_causa;")
+tasas_TOTALES <- dbGetQuery(con, "SELECT * FROM para_tasas_TOTALES;")
+# Ver los primeros registros
+#head(prov_causa)
+head(sexo_edad)
+head(tasas_TOTALES)
+```
+
+### Librerías
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(sf)
+library(knitr)
+library(sf)
+library(ggmap)
+library(maptools)
+```
+
+## Descripción de mortalidad por sexo, edad y grupo de causas
+
+### Cálculo de tasas de mortalidad por grandes grupos de causas
+
+```{r}
+tasas_TOTALES<-tasas_TOTALES %>% 
+  mutate(Tasa_mortalidad= round(suma_cantidad/total*100000,1))
+```
+
+
+### Etiquetas causas y sexo
+
+```{r}
+
+sexo_edad <- sexo_edad %>%
+  mutate(
+    sexo = case_when(
+      sexo_id == 1 ~ "Varón",
+      sexo_id == 2 ~ "Mujer",
+      sexo_id == 9 ~ "Indeterminado"
+    ),
+    grupo_causa = case_when(
+      Grupo == 1 ~ "ENT",
+      Grupo == 2 ~ "Transmisibles y maternas",
+      Grupo == 3 ~ "Lesiones",
+      Grupo == 4 ~ "Mal definidas"
+    ),
+   grupo_edad1 = case_when(
+      str_detect(grupo_edad, "55 a 74 anios") ~ "55-74",  
+      str_detect(grupo_edad, "75 anios y mas") ~ "75+",   
+      str_detect(grupo_edad, "0  a 14 anios") ~ "0-14",    
+      str_detect(grupo_edad, "15 a 34 anios") ~ "15-34",  
+      str_detect(grupo_edad, "35 a 54 anios") ~ "35-54",  
+      str_detect(grupo_edad, "Sin especificar") ~ "S/D",  
+      TRUE ~ grupo_edad 
+    )
+  )
+
+tasas_TOTALES<-tasas_TOTALES %>% mutate(grupo_causa=case_when(
+                                               Grupo==1 ~ "ENT",
+                                               Grupo==2 ~ "Transmisibles y maternas",
+                                               Grupo==3 ~ "Lesiones",
+                                               Grupo==4 ~ "Mal definidas"))
+
+```
+
+### Gráficos
+
+```{r}
+total_muertes=sum(sexo_edad$suma_cantidad)
+
+print(paste("En Argentina en el año 2022 se produjeron",total_muertes, "muertes") )
+
+sexo<-sexo_edad %>% group_by(sexo)%>%
+  summarise(muertes=sum(suma_cantidad))%>%
+  filter(sexo=="Mujer"|sexo=="Varón")%>%
+  mutate(porcentaje=round(muertes/sum(muertes)*100,1))
+
+edad<-sexo_edad %>% group_by(grupo_edad1)%>%
+  summarise(muertes=sum(suma_cantidad))%>%
+  #filter(sexo=="Mujer"|sexo=="Varón")%>%
+  mutate(porcentaje=round(muertes/sum(muertes)*100,1))
+
+causa<-sexo_edad %>% group_by(grupo_causa)%>%
+  summarise(muertes=sum(suma_cantidad))%>%
+  #filter(sexo=="Mujer"|sexo=="Varón")%>%
+  mutate(porcentaje=round(muertes/sum(muertes)*100,1))
+
+library(DT)
+datatable(sexo,caption = "Muertes según sexo")
+datatable(edad,caption = "Muertes según grupo de edad")
+datatable(causa,caption = "Muertes según grupo de causas")
+
+
+```
+```{r}
+sexo_edad %>%
+  filter(sexo=="Mujer"|sexo=="Varón") %>%  # Excluir filas donde sexo sea NA
+  ggplot(aes(x = sexo, y = suma_cantidad, fill = grupo_causa)) +
+  geom_bar(stat = "identity", position = "dodge") +  # Barras agrupadas
+  labs(title = "Muertes por grupo de edad según sexo", x = "Sexo", y = "Defunciones") +
+  theme_minimal() +
+  facet_wrap(~ grupo_causa, ncol = 1, scales = "free")
+```
+
+```{r}
+ggplot(sexo_edad, aes(x = grupo_edad1, y = suma_cantidad, fill = grupo_causa)) +
+  geom_bar(stat = "identity", position = "dodge") +  # Barras agrupadas
+  labs(title = "Muertes por grupo de edad según causa", x = "Grupo de edad", y = "Defunciones") +
+  theme_minimal() +
+  facet_wrap(~ grupo_causa, ncol = 1, scales = "free") 
+  
+
+
+```
+
+
+## Descripción de la mortalidad y el NBI por provincia
+
+### Creación de quintiles de NBI para calcular brechas de mortalidad
+
+```{r}
+glimpse(tasas_TOTALES)
+tasas_TOTALES$quintil <- cut(tasas_TOTALES$nbi, 
+                     breaks = quantile(tasas_TOTALES$nbi, probs = seq(0, 1, by = 0.2), na.rm = TRUE), 
+                     labels = c("Q1", "Q2", "Q3", "Q4", "Q5"), 
+                     include.lowest = TRUE)
+
+# Ver los datos con los quintiles
+head(tasas_TOTALES)
+
+tasas_ENT<-tasas_TOTALES %>% filter(Grupo==1)
+tasas_transmisibles<-tasas_TOTALES %>% filter(Grupo==2)
+tasas_lesiones<-tasas_TOTALES %>% filter(Grupo==3)
+
+```
+
+### Mapa de tasas de mortalidad por lesiones
+
+
+```{r}
+departamentos <- st_read("departamento.json", stringsAsFactors = TRUE)
+departamentos<-filter(departamentos,in1!="94028") 
+#head(departamentos)
+```
+
+
+```{r}
+provincias <- st_read("provincia.json", stringsAsFactors = TRUE)
+
+
+```
+
+```{r}
+#saco antártida para visualizar el mapa mejor
+st_bbox(provincias)
+st_bbox(departamentos)
+
+# Definir una nueva bounding box en WGS 84
+nueva_bb <- st_bbox(c(xmin = -74.00000, ymin = -60.79800, xmax = -26.25207, ymax = -21.00000), crs = 4326)
+
+# Recortar el objeto espacial usando la nueva BB
+provincias1 <- st_make_valid(provincias)
+provincias2 <- st_crop(provincias1, nueva_bb)
+
+# Visualizar el resultado
+#plot(st_geometry(provincias2))
+```
+
+```{r}
+tasas_lesiones <- tasas_lesiones %>%
+  mutate(
+    jurisdiccion_de_residencia_id = as.character(jurisdiccion_de_residencia_id), 
+    jurisdiccion_id = case_when(
+      jurisdiccion_de_residencia_id == "6" ~ "06",
+      jurisdiccion_de_residencia_id == "2" ~ "02",
+      TRUE ~ jurisdiccion_de_residencia_id 
+    )
+  )
+
+provincias_lesiones<-left_join(provincias2,tasas_lesiones,by=c("in1" = "jurisdiccion_id"))
+```
+
+```{r}
+provincias_lesiones %>%
+  ggplot()+
+  geom_sf(aes(fill=Tasa_mortalidad))+
+  labs(title = "Tasas de mortalidad por lesiones",
+  subtitle = "Año 2022",
+  caption= "Fuente: Estadísticas vitales y Censo 2022") +
+ scale_fill_viridis_c()
+
+```
+
+### Mapa de tasas de mortalidad por ENT
+
+
+
+```{r}
+tasas_ENT <- tasas_ENT %>%
+  mutate(
+    jurisdiccion_de_residencia_id = as.character(jurisdiccion_de_residencia_id), # Convertir a character
+    jurisdiccion_id = case_when(
+      jurisdiccion_de_residencia_id == "6" ~ "06",
+      jurisdiccion_de_residencia_id == "2" ~ "02",
+      TRUE ~ jurisdiccion_de_residencia_id # Esto ya será character
+    )
+  )
+
+provincias_ENT<-left_join(provincias2,tasas_ENT,by=c("in1" = "jurisdiccion_id"))
+```
+
+```{r}
+provincias_ENT %>%
+  ggplot()+
+  geom_sf(aes(fill=Tasa_mortalidad))+
+  labs(title = "Tasas de mortalidad por ENT",
+  subtitle = "Año 2022",
+  caption= "Fuente: Estadísticas vitales y Censo 2022") +
+ scale_fill_viridis_c()
+
+```
+
+### Mapa de porcentaje de hogares con NBI
+
+```{r}
+provincias_lesiones %>%
+  ggplot()+
+  geom_sf(aes(fill=nbi))+
+  labs(title = "Porcentaje de hogares con NBI",
+  subtitle = "Año 2022",
+  caption= "Fuente: Censo 2022") +
+ scale_fill_viridis_c()
+```
+
+## Análisis de brechas de mortalidad por quintiles de NBI
+
+```{r}
+
+Q_ENT<-table(tasas_ENT$provincias,tasas_ENT$quintil)
+
+kable(Q_ENT,caption = "Provincias según quintiles de NBI")
+```
+
+### Cálculo de tasas de mortalidad según quintiles de NBI
+```{r}
+tasas_ENT_quintiles<-tasas_TOTALES %>% filter(Grupo==1) %>% 
+  group_by(quintil)%>% 
+  summarise(tasa_quintil= round(sum(suma_cantidad)/sum(total)*100000,1))
+
+tasas_lesiones_quintiles<-tasas_TOTALES %>% filter(Grupo==3)%>% 
+  group_by(quintil)%>% 
+  summarise(tasa_quintil= round(sum(suma_cantidad)/sum(total)*100000,1))
+```
+
+### Brechas de mortalidad entre quintiles
+```{r}
+tasas_ENT_quintiles <- tasas_ENT_quintiles[!is.na(tasas_ENT_quintiles$quintil) & !is.na(tasas_ENT_quintiles$tasa_quintil), ]
+
+tasas_lesiones_quintiles <- tasas_lesiones_quintiles[!is.na(tasas_lesiones_quintiles$quintil) & !is.na(tasas_lesiones_quintiles$tasa_quintil), ]
+
+ggplot(tasas_ENT_quintiles, aes(x = quintil, y = tasa_quintil)) +
+  geom_bar(stat = "identity") + 
+  labs(title = "Tasa de mortalidad por ENT por quintil de NBI", x = "Quintil", y = "Tasa c/100.000 hab.")
+
+ggplot(tasas_lesiones_quintiles, aes(x = quintil, y = tasa_quintil)) +
+  geom_bar(stat = "identity") + 
+  labs(title = "Tasa de mortalidad por lesiones por quintil de NBI", x = "Quintil", y = "Tasa c/100.000 hab.")
+
+brecha_quintiles_ENT=tasas_ENT_quintiles$tasa_quintil[5] /tasas_ENT_quintiles$tasa_quintil[1]
+print(paste("La brecha entre la tasa de mortalidad por ENT entre el quintil de provincias con mayor NBI y el quintil con menor NBI es", round(brecha_quintiles_ENT,2), "esto quiere decir que la mortalidad por ENT del quintil con mayor NBI es un 34% menor que la mortalidad en el quintil con menor NBI"))
+
+brecha_quintiles_lesiones=tasas_lesiones_quintiles$tasa_quintil[5] /tasas_lesiones_quintiles$tasa_quintil[1]
+print(paste("La brecha entre la tasa de mortalidad por lesiones entre el quintil de provincias con mayor NBI y el quintil con menor NBI es", round(brecha_quintiles_lesiones,2), "esto quiere decir que la mortalidad por lesiones del quintil con mayor NBI es un 13% mayor que la mortalidad en el quintil con menor NBI"))
+
+```
+
+
+
+
+
+
